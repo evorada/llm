@@ -208,11 +208,22 @@ export async function* streamFromOpenAI(
       if (chunk.usage) {
         // OpenAI's prompt_tokens INCLUDES cached tokens (cached_tokens is a
         // sub-detail). Subtract it out so inputTokens means UNCACHED input,
-        // per the library's additive Usage convention.
-        const cachedTokens = chunk.usage.prompt_tokens_details?.cached_tokens;
+        // per the library's additive Usage convention. OpenRouter also reports
+        // cache_write_tokens (Anthropic-family models), likewise included in
+        // prompt_tokens, so it is subtracted too and surfaced separately.
+        const details = chunk.usage.prompt_tokens_details as
+          | { cached_tokens?: number; cache_write_tokens?: number }
+          | undefined;
+        const cachedTokens = details?.cached_tokens;
+        const cacheWriteTokens = details?.cache_write_tokens;
         usage = {
           ...(chunk.usage.prompt_tokens !== undefined
-            ? { inputTokens: chunk.usage.prompt_tokens - (cachedTokens ?? 0) }
+            ? {
+                inputTokens: Math.max(
+                  0,
+                  chunk.usage.prompt_tokens - (cachedTokens ?? 0) - (cacheWriteTokens ?? 0),
+                ),
+              }
             : {}),
           ...(chunk.usage.completion_tokens !== undefined
             ? { outputTokens: chunk.usage.completion_tokens }
@@ -221,6 +232,7 @@ export async function* streamFromOpenAI(
             ? { totalTokens: chunk.usage.total_tokens }
             : {}),
           ...(cachedTokens !== undefined ? { cacheReadTokens: cachedTokens } : {}),
+          ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
         };
       }
 

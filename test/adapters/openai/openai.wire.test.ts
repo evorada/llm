@@ -308,6 +308,84 @@ describe('OpenAI adapter — wire format', () => {
     });
   });
 
+  /* OpenRouter (Anthropic-family models) reports cache writes as
+     prompt_tokens_details.cache_write_tokens, included in prompt_tokens like
+     cached_tokens. Shape from OpenRouter's usage-accounting docs. */
+  it('surfaces OpenRouter cache_write_tokens and keeps inputTokens uncached', async () => {
+    mocks.create.mockResolvedValue(
+      mockStream([
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+        {
+          choices: [],
+          usage: {
+            prompt_tokens: 194,
+            completion_tokens: 2,
+            total_tokens: 196,
+            prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 100 },
+          },
+        },
+      ]),
+    );
+    const adapter = await buildAdapter();
+    const events = await drain(adapter, {
+      model: 'anthropic/claude-haiku-4.5',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    const end = events[events.length - 1] as Extract<LlmEvent, { type: 'end' }>;
+    expect(end.usage).toEqual({
+      inputTokens: 94,
+      outputTokens: 2,
+      totalTokens: 196,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 100,
+    });
+  });
+
+  it('a cache hit on OpenRouter: reads counted, no writes, uncached remainder as input', async () => {
+    mocks.create.mockResolvedValue(
+      mockStream([
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+        {
+          choices: [],
+          usage: {
+            prompt_tokens: 10339,
+            completion_tokens: 60,
+            total_tokens: 10399,
+            prompt_tokens_details: { cached_tokens: 10318, cache_write_tokens: 0 },
+          },
+        },
+      ]),
+    );
+    const adapter = await buildAdapter();
+    const events = await drain(adapter, {
+      model: 'anthropic/claude-haiku-4.5',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    const end = events[events.length - 1] as Extract<LlmEvent, { type: 'end' }>;
+    expect(end.usage).toMatchObject({ inputTokens: 21, cacheReadTokens: 10318, cacheWriteTokens: 0 });
+  });
+
+  it('never reports negative inputTokens if a backend counts cache tokens outside prompt_tokens', async () => {
+    mocks.create.mockResolvedValue(
+      mockStream([
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+        {
+          choices: [],
+          usage: {
+            prompt_tokens: 50,
+            completion_tokens: 2,
+            total_tokens: 52,
+            prompt_tokens_details: { cached_tokens: 40, cache_write_tokens: 30 },
+          },
+        },
+      ]),
+    );
+    const adapter = await buildAdapter();
+    const events = await drain(adapter, { model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] });
+    const end = events[events.length - 1] as Extract<LlmEvent, { type: 'end' }>;
+    expect(end.usage?.inputTokens).toBe(0);
+  });
+
   it('preserves vendorRaw assistant message with tool_calls on re-submission', async () => {
     mocks.create.mockResolvedValue(
       mockStream([{ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }]),
